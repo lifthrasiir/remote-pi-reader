@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <utility>
 #include <chrono>
 #include <curl/curl.h>
 
@@ -18,9 +19,10 @@ private:
 	static const long long DIGITS_PER_WORD = 19;
 	static const long long BLOCK_WORD_COUNT = (BLOCK_SIZE - 1) / DIGITS_PER_WORD + 1;
 
+	static const std::size_t BUFFER_SIZE = std::max(1 << 20, CURL_MAX_READ_SIZE);
 	// slight overestimation, should be enough
 	static const long long MAX_WORDS_PER_WRITE =
-		(static_cast<long long>(CURL_MAX_READ_SIZE) - 2) / WORD_SIZE + 2;
+		(static_cast<long long>(BUFFER_SIZE) - 2) / WORD_SIZE + 2;
 
 public:
 	static const long long NUM_DIGITS = BLOCK_SIZE * BLOCK_COUNT;
@@ -30,7 +32,7 @@ public:
 public:
 	RemotePiReader(std::size_t context_size, int checkpoint_period_log2):
 		curl_(curl_easy_init()),
-		digits_(MAX_WORDS_PER_WRITE + context_size, '0'),
+		digits_(MAX_WORDS_PER_WRITE * DIGITS_PER_WORD + context_size, '0'),
 		context_size_(context_size),
 		checkpoint_period_log2_(checkpoint_period_log2)
 	{
@@ -39,6 +41,8 @@ public:
 		//curl_easy_setopt(curl(), CURLOPT_VERBOSE, 1l);
 		curl_easy_setopt(curl(), CURLOPT_NOSIGNAL, 1l);
 		curl_easy_setopt(curl(), CURLOPT_BUFFERSIZE, (long)CURL_MAX_READ_SIZE);
+
+		buffer_.reserve(BUFFER_SIZE);
 	}
 
 	template <class Callback>
@@ -117,8 +121,9 @@ private:
 		std::size_t last_inword_offset = 0; // always < WORD_SIZE
 		const long long block_digit_offset = block_offset * BLOCK_SIZE;
 		long long last_digit_offset = inblock_offset;
-		auto err = perform([&](const char *ptr, std::size_t sz) {
-			const char *end = ptr + sz;
+		auto handle_words = [&]() {
+			const char *ptr = buffer_.data();
+			const char *end = buffer_.data() + buffer_.size();
 			char *digits = digits_.data() + context_size_;
 			long long ndigits = 0;
 
@@ -129,6 +134,7 @@ private:
 			while (inword_offset < WORD_SIZE) {
 				if (ptr == end) {
 					last_inword_offset = inword_offset;
+					buffer_.clear();
 					return true;
 				}
 				partial_word[inword_offset++] = *ptr++;
@@ -170,12 +176,23 @@ private:
 				std::memmove(digits_.data(), digits_.data() + ndigits, context_size_);
 			}
 
+			buffer_.clear();
 			return keep_going;
+		};
+
+		auto err = perform([&](const char *ptr, std::size_t sz) {
+			if (buffer_.size() + sz > BUFFER_SIZE && !handle_words()) return false;
+			buffer_.append(ptr, sz);
+			return true;
 		});
 		if (err != CURLE_OK && err != CURLE_WRITE_ERROR) {
 			throw curl_easy_strerror(err);
 		}
-		return err == CURLE_OK;
+		if (err == CURLE_OK) {
+			return handle_words();
+		} else {
+			return false;
+		}
 	}
 
 	typedef std::size_t WriteCallback(const char *, std::size_t);
@@ -276,6 +293,7 @@ private:
 
 	CURL* curl() const { return curl_.get(); }
 
+	std::string buffer_;
 	std::vector<char> digits_;
 	std::size_t context_size_;
 
