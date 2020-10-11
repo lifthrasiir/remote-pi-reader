@@ -7,7 +7,7 @@ using namespace std;
 
 int main(int argc, char **argv) {
 	try {
-		RemotePiReader pi;
+		RemotePiReader pi(0, 28);
 
 		long long start = 0;
 		if (argc > 1) start = std::atoll(argv[1]);

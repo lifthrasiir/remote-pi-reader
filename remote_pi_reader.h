@@ -28,10 +28,11 @@ public:
 	typedef std::chrono::steady_clock::duration duration;
 
 public:
-	RemotePiReader(std::size_t context_size = 0):
+	RemotePiReader(std::size_t context_size, int checkpoint_period_log2):
 		curl_(curl_easy_init()),
 		digits_(MAX_WORDS_PER_WRITE + context_size, '0'),
-		context_size_(context_size)
+		context_size_(context_size),
+		checkpoint_period_log2_(checkpoint_period_log2)
 	{
 		if (!curl_) throw "failed to initialize curl";
 
@@ -52,8 +53,23 @@ public:
 		}
 	}
 
-	duration network_time() const { return network_time_; }
-	duration callback_time() const { return callback_time_; }
+	void checkpoint(long long offset) {
+		using namespace std::chrono;
+
+		if (checkpoint_period_log2_ < 0) return;
+
+		const auto now = steady_clock::now();
+		if (
+			(checkpoint_ >> checkpoint_period_log2_) != (offset >> checkpoint_period_log2_) ||
+			now - last_checkpoint_ >= 10s
+		) {
+			checkpoint_ = offset;
+			last_checkpoint_ = now;
+			const auto network_secs = duration_cast<milliseconds>(network_time_).count() / 1000.0;
+			const auto callback_secs = duration_cast<milliseconds>(callback_time_).count() / 1000.0;
+			std::fprintf(stderr, "checkpoint: %lld [net %.1fs calc %.1fs]\n", checkpoint_, network_secs, callback_secs);
+		}
+	}
 
 private:
 	template <class Callback>
@@ -73,10 +89,10 @@ private:
 				if (found) {
 					block_offset_ = block_offset;
 					data_offset_ = (found - ptr) + 1;
-					return static_cast<std::size_t>(0); // causes err to be CURLE_WRITE_ERROR
+					return false;
 				}
 				off += sz;
-				return sz;
+				return true;
 			});
 			if (err == CURLE_OK) {
 				throw "no data marker in the first 1KB of the .ycd file";
@@ -101,11 +117,7 @@ private:
 		std::size_t last_inword_offset = 0; // always < WORD_SIZE
 		const long long block_digit_offset = block_offset * BLOCK_SIZE;
 		long long last_digit_offset = inblock_offset;
-		auto before_curl_time = std::chrono::steady_clock::now();
 		auto err = perform([&](const char *ptr, std::size_t sz) {
-			auto after_curl_time = std::chrono::steady_clock::now();
-			network_time_ += after_curl_time - before_curl_time;
-
 			const char *end = ptr + sz;
 			char *digits = digits_.data() + context_size_;
 			long long ndigits = 0;
@@ -117,7 +129,7 @@ private:
 			while (inword_offset < WORD_SIZE) {
 				if (ptr == end) {
 					last_inword_offset = inword_offset;
-					return sz;
+					return true;
 				}
 				partial_word[inword_offset++] = *ptr++;
 			}
@@ -147,7 +159,9 @@ private:
 				ndigits -= digit_offset - BLOCK_SIZE;
 			}
 
-			auto keep_going = callback(block_digit_offset + last_digit_offset, digits, ndigits);
+			const auto old_digit_offset = block_digit_offset + last_digit_offset;
+			checkpoint(old_digit_offset);
+			const bool keep_going = callback(old_digit_offset, digits, ndigits);
 
 			last_word_offset = word_offset;
 			last_inword_offset = inword_offset;
@@ -156,11 +170,7 @@ private:
 				std::memmove(digits_.data(), digits_.data() + ndigits, context_size_);
 			}
 
-			auto after_callback_time = std::chrono::steady_clock::now();
-			callback_time_ += after_callback_time - after_curl_time;
-			before_curl_time = after_callback_time;
-
-			return keep_going ? sz : 0; // causes err to be CURLE_WRITE_ERROR
+			return keep_going;
 		});
 		if (err != CURLE_OK && err != CURLE_WRITE_ERROR) {
 			throw curl_easy_strerror(err);
@@ -172,7 +182,22 @@ private:
 
 	template <class Callback>
 	CURLcode perform(Callback&& callback) {
-		std::function<WriteCallback> func{callback};
+		using namespace std::chrono;
+
+		auto before_curl_time = steady_clock::now();
+		std::function<WriteCallback> func = [&](const char *ptr, std::size_t sz) {
+			const auto after_curl_time = steady_clock::now();
+			network_time_ += after_curl_time - before_curl_time;
+
+			const bool keep_going = callback(ptr, sz);
+
+			const auto after_callback_time = steady_clock::now();
+			callback_time_ += after_callback_time - after_curl_time;
+			before_curl_time = after_callback_time;
+
+			return keep_going ? sz : 0; // causes err to be CURLE_WRITE_ERROR at the end
+		};
+
 		curl_easy_setopt(curl(), CURLOPT_WRITEFUNCTION, &write_callback_wrapper);
 		curl_easy_setopt(curl(), CURLOPT_WRITEDATA, static_cast<void*>(&func));
 		return curl_easy_perform(curl());
@@ -256,5 +281,9 @@ private:
 
 	duration network_time_{};
 	duration callback_time_{};
+
+	int checkpoint_period_log2_ = -1;
+	long long checkpoint_ = -1;
+	std::chrono::steady_clock::time_point last_checkpoint_{};
 };
 
