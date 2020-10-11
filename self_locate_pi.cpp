@@ -6,6 +6,7 @@
 #include "remote_pi_reader.h"
 
 using namespace std;
+using namespace std::chrono;
 
 int main(int argc, char **argv) {
 	try {
@@ -21,8 +22,11 @@ int main(int argc, char **argv) {
 		pi.read(start, [&](long long offset, const char *digits, long long ndigits) {
 			if ((checkpoint >> CHECKPOINT_PERIOD_LOG2) != (offset >> CHECKPOINT_PERIOD_LOG2)) {
 				checkpoint = offset;
-				fprintf(stderr, "checkpoint: %lld\n", checkpoint);
+				const auto network_secs = duration_cast<milliseconds>(pi.network_time()).count() / 1000.0;
+				const auto callback_secs = duration_cast<milliseconds>(pi.callback_time()).count() / 1000.0;
+				fprintf(stderr, "checkpoint: %lld [net %.1fs calc %.1fs]\n", checkpoint, network_secs, callback_secs);
 			}
+
 			if (offset < 10000000 + CONTEXT_SIZE) {
 				// no optimization for first 10^7 digits
 				for (long long i = max(-CONTEXT_SIZE, -offset); i < ndigits; ++i) {

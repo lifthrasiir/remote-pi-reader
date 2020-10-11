@@ -6,9 +6,8 @@
 #include <memory>
 #include <vector>
 #include <functional>
-extern "C" {
+#include <chrono>
 #include <curl/curl.h>
-}
 
 class RemotePiReader {
 private:
@@ -25,6 +24,8 @@ private:
 
 public:
 	static const long long NUM_DIGITS = BLOCK_SIZE * BLOCK_COUNT;
+
+	typedef std::chrono::steady_clock::duration duration;
 
 public:
 	RemotePiReader(std::size_t context_size = 0):
@@ -50,6 +51,9 @@ public:
 			if (!read_block(block_offset++, 0, callback)) return;
 		}
 	}
+
+	duration network_time() const { return network_time_; }
+	duration callback_time() const { return callback_time_; }
 
 private:
 	template <class Callback>
@@ -97,7 +101,11 @@ private:
 		std::size_t last_inword_offset = 0; // always < WORD_SIZE
 		const long long block_digit_offset = block_offset * BLOCK_SIZE;
 		long long last_digit_offset = inblock_offset;
+		auto before_curl_time = std::chrono::steady_clock::now();
 		auto err = perform([&](const char *ptr, std::size_t sz) {
+			auto after_curl_time = std::chrono::steady_clock::now();
+			network_time_ += after_curl_time - before_curl_time;
+
 			const char *end = ptr + sz;
 			char *digits = digits_.data() + context_size_;
 			long long ndigits = 0;
@@ -147,6 +155,11 @@ private:
 			if (context_size_ > 0) {
 				std::memmove(digits_.data(), digits_.data() + ndigits, context_size_);
 			}
+
+			auto after_callback_time = std::chrono::steady_clock::now();
+			callback_time_ += after_callback_time - after_curl_time;
+			before_curl_time = after_callback_time;
+
 			return keep_going ? sz : 0; // causes err to be CURLE_WRITE_ERROR
 		});
 		if (err != CURLE_OK && err != CURLE_WRITE_ERROR) {
@@ -240,5 +253,8 @@ private:
 
 	std::vector<char> digits_;
 	std::size_t context_size_;
+
+	duration network_time_{};
+	duration callback_time_{};
 };
 
