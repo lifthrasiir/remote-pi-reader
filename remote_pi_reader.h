@@ -57,22 +57,27 @@ public:
 		}
 	}
 
-	void checkpoint(long long offset) {
+	bool checkpoint(long long offset) {
 		using namespace std::chrono;
 
-		if (checkpoint_period_log2_ < 0) return;
+		if (checkpoint_period_log2_ < 0) return true;
 
 		const auto now = steady_clock::now();
-		if (
-			(checkpoint_ >> checkpoint_period_log2_) != (offset >> checkpoint_period_log2_) ||
-			now - last_checkpoint_ >= 10s
-		) {
+		const auto elapsed = now - last_checkpoint_;
+		if (elapsed >= 10s || (checkpoint_ >> checkpoint_period_log2_) != (offset >> checkpoint_period_log2_)) {
+			const auto mdigits_per_sec = (offset - checkpoint_) / double(duration_cast<microseconds>(elapsed).count());
 			checkpoint_ = offset;
 			last_checkpoint_ = now;
 			const auto network_secs = duration_cast<milliseconds>(network_time_).count() / 1000.0;
 			const auto callback_secs = duration_cast<milliseconds>(callback_time_).count() / 1000.0;
-			std::fprintf(stderr, "checkpoint: %lld [net %.1fs calc %.1fs]\n", checkpoint_, network_secs, callback_secs);
+			std::fprintf(stderr, "checkpoint: %lld [net %.1fs calc %.1fs rate %.2fM/s]\n", checkpoint_, network_secs, callback_secs, mdigits_per_sec);
+			if (network_secs >= 30 && mdigits_per_sec < 10) {
+				fprintf(stderr, "connection got stale, restarting...\n");
+				return false;
+			}
 		}
+
+		return true;
 	}
 
 private:
@@ -166,8 +171,8 @@ private:
 			}
 
 			const auto old_digit_offset = block_digit_offset + last_digit_offset;
-			checkpoint(old_digit_offset);
-			const bool keep_going = callback(old_digit_offset, digits, ndigits);
+			bool keep_going = checkpoint(old_digit_offset);
+			keep_going &= callback(old_digit_offset, digits, ndigits);
 
 			last_word_offset = word_offset;
 			last_inword_offset = inword_offset;

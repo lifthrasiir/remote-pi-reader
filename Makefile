@@ -1,4 +1,4 @@
-CXXFLAGS=-O3
+CXXFLAGS=-O3 -march=native -mtune=native
 LDFLAGS=-lcurl
 BINS=display_pi self_locate_pi
 
