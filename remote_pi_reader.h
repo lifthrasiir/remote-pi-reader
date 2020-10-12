@@ -42,6 +42,8 @@ public:
 		//curl_easy_setopt(curl(), CURLOPT_VERBOSE, 1l);
 		curl_easy_setopt(curl(), CURLOPT_NOSIGNAL, 1l);
 		curl_easy_setopt(curl(), CURLOPT_BUFFERSIZE, (long)CURL_MAX_READ_SIZE);
+		curl_easy_setopt(curl(), CURLOPT_XFERINFOFUNCTION, &check_stale);
+		curl_easy_setopt(curl(), CURLOPT_XFERINFODATA, this);
 
 		buffer_.reserve(BUFFER_SIZE);
 	}
@@ -82,6 +84,19 @@ public:
 	}
 
 private:
+	static int check_stale(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+		using namespace std::chrono;
+
+		const auto pi = reinterpret_cast<RemotePiReader*>(clientp);
+		const auto now = steady_clock::now();
+		const auto elapsed = now - pi->last_checkpoint_;
+		if (elapsed >= 15s) {
+			fprintf(stderr, "connection got stale, restarting...\n");
+			return 1;
+		}
+		return 0;
+	}
+
 	template <class Callback>
 	bool read_block(int block_offset, long long inblock_offset, Callback&& callback) {
 		const long long start_word_offset = inblock_offset / DIGITS_PER_WORD;
