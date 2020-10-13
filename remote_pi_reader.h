@@ -41,9 +41,10 @@ public:
 
 		//curl_easy_setopt(curl(), CURLOPT_VERBOSE, 1l);
 		curl_easy_setopt(curl(), CURLOPT_NOSIGNAL, 1l);
-		curl_easy_setopt(curl(), CURLOPT_BUFFERSIZE, (long)CURL_MAX_READ_SIZE);
+		curl_easy_setopt(curl(), CURLOPT_BUFFERSIZE, long(CURL_MAX_READ_SIZE));
+		curl_easy_setopt(curl(), CURLOPT_NOPROGRESS, 0l);
 		curl_easy_setopt(curl(), CURLOPT_XFERINFOFUNCTION, &check_stale);
-		curl_easy_setopt(curl(), CURLOPT_XFERINFODATA, this);
+		curl_easy_setopt(curl(), CURLOPT_XFERINFODATA, static_cast<void*>(this));
 
 		buffer_.reserve(BUFFER_SIZE);
 	}
@@ -68,7 +69,7 @@ public:
 		const auto now = steady_clock::now();
 		const auto elapsed = now - last_checkpoint_;
 		if (elapsed >= 10s || (checkpoint_ >> checkpoint_period_log2_) != (offset >> checkpoint_period_log2_)) {
-			const auto mdigits_per_sec = (offset - checkpoint_) / double(duration_cast<microseconds>(elapsed).count());
+			const auto mdigits_per_sec = checkpoint_ < 0 ? 0 : (offset - checkpoint_) / double(duration_cast<microseconds>(elapsed).count());
 			checkpoint_ = offset;
 			last_checkpoint_ = now;
 			const auto network_secs = duration_cast<milliseconds>(network_time_).count() / 1000.0;
@@ -84,7 +85,7 @@ public:
 	}
 
 private:
-	static int check_stale(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+	static int check_stale(void *clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
 		using namespace std::chrono;
 
 		const auto pi = reinterpret_cast<RemotePiReader*>(clientp);
@@ -238,6 +239,7 @@ private:
 
 		curl_easy_setopt(curl(), CURLOPT_WRITEFUNCTION, &write_callback_wrapper);
 		curl_easy_setopt(curl(), CURLOPT_WRITEDATA, static_cast<void*>(&func));
+		last_checkpoint_ = before_curl_time;
 		return curl_easy_perform(curl());
 	}
 
