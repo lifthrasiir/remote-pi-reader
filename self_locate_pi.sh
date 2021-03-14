@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: CC0-1.0
 make self_locate_pi
 LOGFILE=self_locate_pi.log
 while true; do

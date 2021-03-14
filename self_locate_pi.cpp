@@ -1,3 +1,6 @@
+// Copyright (c) 2020, Kang Seonghoon.
+// SPDX-License-Identifier: CC0-1.0
+
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
